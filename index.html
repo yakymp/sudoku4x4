@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2×2 Variant Sudoku — Generator (JS-only)</title>
+<style>
+  :root { --bg:#1a1a1a; --fg:#ddd; --panel:#242424; --border:#3a3a3a; --cell:#202020;
+          --gridthin:#555; --gridthick:#aaa; --thermo:#6b6b6b; --cage:#9a9a9a; --diag:#34BBE6;
+          --parity:#3a3a3a; --accent:#5aa9ff; --muted:#8a8a8a; --good:#5fd38d; --bad:#ff6b6b; }
+  body.light { --bg:#f5f5f5; --fg:#1c1c1c; --panel:#ececec; --border:#ccc; --cell:#fff;
+               --gridthin:#bbb; --gridthick:#222; --thermo:#bdbdbd; --cage:#666; --parity:#dcdcdc;
+               --accent:#1565c0; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--border); }
+  h1 { font-size:16px; margin:0; }
+  .spacer { flex:1; }
+  button { background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:7px 12px; cursor:pointer; font:inherit; min-height:34px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#06121f; border-color:var(--accent); font-weight:700; }
+  button:active { transform:translateY(1px); }
+  main { flex:1; min-height:0; display:flex; gap:16px; padding:16px; }
+  .side { width:260px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px; overflow:auto; }
+  .side h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:0 0 8px; }
+  .rules { display:flex; flex-direction:column; gap:2px; margin-bottom:14px; }
+  label.rule { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:5px; cursor:pointer; }
+  label.rule:hover { background:var(--bg); }
+  label.rule input { accent-color:var(--accent); width:16px; height:16px; }
+  .toolrow { display:flex; gap:6px; margin-bottom:10px; }
+  .toolrow button { flex:1; padding:4px; font-size:12px; min-height:28px; }
+  .content { flex:1; min-width:0; display:flex; flex-direction:column; gap:12px; align-items:center; }
+  svg.board { width:min(62vh,100%); height:auto; background:transparent; }
+  .meta { width:100%; max-width:620px; }
+  .openrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .open { display:inline-block; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; color:var(--accent); text-decoration:none; font-weight:700; }
+  .open:hover { background:var(--accent); color:var(--bg); }
+  .open.disabled { opacity:.4; pointer-events:none; }
+  .rulestext { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 14px; white-space:pre-wrap; font-size:13px; width:100%; max-width:620px; }
+  #status { color:var(--muted); min-height:20px; }
+  #status.bad { color:var(--bad); } #status.good { color:var(--good); }
+  .title { font-weight:700; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>2×2 Variant Generator</h1>
+    <span id="status"></span>
+    <span class="spacer"></span>
+    <button id="theme" title="toggle theme">◐</button>
+  </header>
+  <main>
+    <div class="side">
+      <h2>Rule sets</h2>
+      <div style="font-size:12px;color:var(--muted);margin:-4px 0 8px">every selected rule is used</div>
+      <div class="toolrow"><button id="all">all</button><button id="none">none</button></div>
+      <div class="rules" id="rules"></div>
+      <button class="primary" id="gen" style="width:100%">Generate ⏎</button>
+    </div>
+    <div class="content">
+      <svg class="board" id="board" viewBox="0 0 368 368"></svg>
+      <div class="meta">
+        <div class="openrow">
+          <span class="title" id="title">—</span>
+          <span class="spacer"></span>
+          <a class="open disabled" id="open" target="_blank" rel="noopener">Open in SudokuPad ↗</a>
+        </div>
+      </div>
+      <div class="rulestext" id="rulestext" style="display:none"></div>
+    </div>
+  </main>
+
+<script src="lz-string.min.js"></script>
+<script>
+"use strict";
+// ===========================================================================
+//  Engine — full puzzle generator ported to the browser (no backend)
+// ===========================================================================
+const N=4;
+const idx=(r,c)=>r*N+c, rc=i=>[Math.floor(i/N),i%N];
+const boxOf=(r,c)=>(r>>1)*2+(c>>1);
+
+// ---- enumerate the 288 valid grids ----
+const GRIDS=(()=>{
+  const out=[], perms=[];
+  (function perm(a){ if(a.length===N){perms.push(a.slice());return;}
+    for(let v=1;v<=N;v++) if(!a.includes(v)){a.push(v);perm(a);a.pop();} })([]);
+  const g=new Int8Array(N*N);
+  function okRow(r){
+    for(let c=0;c<N;c++){const s=new Set();for(let rr=0;rr<=r;rr++){const v=g[idx(rr,c)];if(s.has(v))return false;s.add(v);}}
+    if(r%2===1){for(let bc=0;bc<2;bc++){const s=new Set();for(let rr=r-1;rr<=r;rr++)for(let cc=bc*2;cc<bc*2+2;cc++){const v=g[idx(rr,cc)];if(s.has(v))return false;s.add(v);}}}
+    return true;
+  }
+  (function rec(r){ if(r===N){out.push(Int8Array.from(g));return;}
+    for(const p of perms){for(let c=0;c<N;c++)g[idx(r,c)]=p[c]; if(okRow(r))rec(r+1);} })(0);
+  return out;
+})();
+const NG=GRIDS.length;                       // 288
+const ALL=(1n<<BigInt(NG))-1n;
+const gridIndex=(()=>{const m=new Map();GRIDS.forEach((g,i)=>m.set(g.join(""),i));return m;})();
+
+// valuemask[cell][digit] = BigInt of grids whose cell holds digit
+const VAL=Array.from({length:N*N},()=>[0n,0n,0n,0n,0n]);
+GRIDS.forEach((g,gi)=>{const b=1n<<BigInt(gi);for(let c=0;c<N*N;c++)VAL[c][g[c]]|=b;});
+
+// ---- geometry for candidate shapes ----
+const KING=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+const KNIGHT=[[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]];
+const KPATHS=(()=>{const all=[];for(let i=0;i<N*N;i++){(function dfs(path){
+    if(path.length>=2)all.push(path.slice());
+    if(path.length===4)return;
+    const [r,c]=rc(path[path.length-1]);
+    for(const [dr,dc] of KING){const nr=r+dr,nc=c+dc; if(nr>=0&&nr<N&&nc>=0&&nc<N){const j=idx(nr,nc); if(!path.includes(j)){path.push(j);dfs(path);path.pop();}}}
+  })([i]);}return all;})();
+const CONNECTED=(()=>{const seen=new Set(),out=[];
+  function grow(set){const key=[...set].sort((a,b)=>a-b).join(",");if(seen.has(key))return;seen.add(key);out.push([...set].sort((a,b)=>a-b));
+    if(set.size>=4)return;
+    for(const i of set){const[r,c]=rc(i);for(const[dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]){const nr=r+dr,nc=c+dc;if(nr>=0&&nr<N&&nc>=0&&nc<N){const j=idx(nr,nc);if(!set.has(j)){const ns=new Set(set);ns.add(j);grow(ns);}}}}}
+  for(let i=0;i<N*N;i++)grow(new Set([i]));return out;})();
+const MAIN=[0,5,10,15], ANTI=[3,6,9,12];
+
+// ---- holds(clue, grid) ----
+function noOffsetRepeat(g,offs){for(let r=0;r<N;r++)for(let c=0;c<N;c++)for(const[dr,dc] of offs){const nr=r+dr,nc=c+dc;if(nr>=0&&nr<N&&nc>=0&&nc<N&&g[idx(r,c)]===g[idx(nr,nc)])return false;}return true;}
+function holds(cl,g){
+  const k=cl.kind,cs=cl.cells,d=cl.data;
+  switch(k){
+    case "cage":{let s=0;const seen=new Set();for(const i of cs){s+=g[i];if(seen.has(g[i]))return false;seen.add(g[i]);}return s===d[0];}
+    case "thermo":for(let i=0;i<cs.length-1;i++)if(!(g[cs[i]]<g[cs[i+1]]))return false;return true;
+    case "arrow":{let s=0;for(let i=1;i<cs.length;i++)s+=g[cs[i]];return g[cs[0]]===s;}
+    case "kropki_w":return Math.abs(g[cs[0]]-g[cs[1]])===1;
+    case "kropki_b":return g[cs[0]]===2*g[cs[1]]||g[cs[1]]===2*g[cs[0]];
+    case "v":return g[cs[0]]+g[cs[1]]===5;
+    case "diag":{const s=new Set(cs.map(i=>g[i]));return s.size===cs.length;}
+    case "odd":return g[cs[0]]%2===1;
+    case "even":return g[cs[0]]%2===0;
+    case "antiknight":return noOffsetRepeat(g,KNIGHT);
+    case "index":{const[col,dig]=d;for(let r=0;r<N;r++){const pos=g[idx(r,col-1)];if(g[idx(r,pos-1)]!==dig)return false;}return true;}
+  }
+  throw "unknown kind "+k;
+}
+
+// ---- candidates true for grid g, restricted to `kinds` (a Set) ----
+function candidates(g,kinds){
+  const out=[];
+  const add=(kind,cells,data=[])=>out.push({kind,cells,data});
+  if(kinds.has("cage")) for(const cells of CONNECTED){ if(cells.length<2)continue; const vals=cells.map(i=>g[i]); if(new Set(vals).size===vals.length) add("cage",cells,[vals.reduce((a,b)=>a+b,0)]); }
+  if(kinds.has("thermo")) for(const p of KPATHS){ let ok=true; for(let i=0;i<p.length-1;i++)if(!(g[p[i]]<g[p[i+1]])){ok=false;break;} if(ok)add("thermo",p); }
+  if(kinds.has("arrow")) for(const p of KPATHS){ let s=0;for(let i=1;i<p.length;i++)s+=g[p[i]]; if(g[p[0]]===s)add("arrow",p); }
+  // orthogonal pairs
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){const i=idx(r,c);
+    if(c+1<N){const j=idx(r,c+1);pairClues(g,i,j,kinds,add);}
+    if(r+1<N){const j=idx(r+1,c);pairClues(g,i,j,kinds,add);}}
+  if(kinds.has("diag")){ for(const dg of [MAIN,ANTI]){ if(new Set(dg.map(i=>g[i])).size===N) add("diag",dg); } }
+  const wantOdd=kinds.has("odd"), wantEven=kinds.has("even");
+  if(wantOdd||wantEven) for(let i=0;i<N*N;i++){ if(g[i]%2===1){if(wantOdd)add("odd",[i]);} else if(wantEven)add("even",[i]); }
+  if(kinds.has("antiknight")&&noOffsetRepeat(g,KNIGHT))add("antiknight",[]);
+  if(kinds.has("index")){const cl={kind:"index",cells:[],data:[1,1]};if(holds(cl,g))out.push(cl);}
+  return out;
+}
+function pairClues(g,a,b,kinds,add){
+  if(kinds.has("kropki_w")&&Math.abs(g[a]-g[b])===1)add("kropki_w",[a,b]);
+  if(kinds.has("kropki_b")&&(g[a]===2*g[b]||g[b]===2*g[a]))add("kropki_b",[a,b]);
+  if(kinds.has("v")&&g[a]+g[b]===5)add("v",[a,b]);
+}
+
+// ---- bitmask helpers ----
+function holdMask(cl){let m=0n;for(let gi=0;gi<NG;gi++)if(holds(cl,GRIDS[gi]))m|=(1n<<BigInt(gi));return m;}
+function lowestIndex(S){const lb=S&(-S);return lb.toString(2).length-1;}
+function anyFixed(S){ if(S===0n)return true; const g0=GRIDS[lowestIndex(S)];
+  for(let c=0;c<N*N;c++) if((S&VAL[c][g0[c]])===S) return true; return false; }
+function weakClues(gi,kinds){
+  return candidates(GRIDS[gi],kinds).map(cl=>({cl,m:holdMask(cl)})).filter(x=>!anyFixed(x.m));
+}
+function cagesDisjoint(clues){const seen=new Set();for(const c of clues)if(c.kind==="cage"){for(const i of c.cells){if(seen.has(i))return false;seen.add(i);}}return true;}
+function isInteresting(masks,targetBit){
+  let sat=ALL; for(const m of masks)sat&=m; if(sat!==targetBit)return false;
+  for(let drop=0;drop<masks.length;drop++){let s=ALL;for(let j=0;j<masks.length;j++)if(j!==drop)s&=masks[j];if(anyFixed(s))return false;}
+  return true;
+}
+
+// ---- search: an interesting puzzle that USES every required kind ----
+function shuffle(a,rng){for(let i=a.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+function* combinations(arr,k){const n=arr.length;if(k>n)return;const idxs=Array.from({length:k},(_,i)=>i);
+  while(true){yield idxs.map(i=>arr[i]);let i=k-1;while(i>=0&&idxs[i]===i+n-k)i--;if(i<0)return;idxs[i]++;for(let j=i+1;j<k;j++)idxs[j]=idxs[j-1]+1;}}
+function findCovering(weak,k,required,targetBit,rng,limit=12,budget=80000){
+  const byKind={}; for(const rk of required)byKind[rk]=weak.filter(x=>x.cl.kind===rk);
+  for(const rk of required){if(!byKind[rk].length)return [];shuffle(byKind[rk],rng);}
+  const extra=k-required.length, matches=[];
+  function* product(lists){ if(!lists.length){yield [];return;} const [first,...rest]=lists; for(const x of first)for(const r of product(rest))yield [x,...r]; }
+  for(const base of product(required.map(rk=>byKind[rk]))){
+    const baseSet=new Set(base);
+    const pool=weak.filter(x=>!baseSet.has(x));
+    const exIter = extra===0 ? [[]] : combinations(pool,extra);
+    for(const ex of exIter){
+      if(--budget<0)return matches;
+      const sel=base.concat(ex);
+      if(!cagesDisjoint(sel.map(x=>x.cl)))continue;
+      if(isInteresting(sel.map(x=>x.m),targetBit)){ matches.push(sel.map(x=>x.cl)); if(matches.length>=limit)return matches; }
+    }
+  }
+  return matches;
+}
+function generateOne(selected,maxK=4,gridCap=30,seed){
+  const rng=mulberry32(seed>>>0);
+  const required=[...new Set(selected)].sort();
+  if(!required.length)return null;
+  let order=shuffle([...Array(NG).keys()],rng);
+  const glob=required.filter(k=>["index","antiknight"].includes(k));
+  if(glob.length){const supports=gi=>glob.every(k=>holds({kind:k,cells:[],data:k==="index"?[1,1]:[]},GRIDS[gi]));
+    order=order.filter(supports).concat(order.filter(gi=>!supports(gi)));}
+  const kmin=Math.max(2,required.length);
+  for(const gi of order.slice(0,gridCap)){
+    const weak=weakClues(gi,new Set(required));
+    const avail=new Set(weak.map(x=>x.cl.kind));
+    if(!required.every(k=>avail.has(k)))continue;
+    for(let k=kmin;k<=maxK;k++){ if(weak.length<k)break;
+      const m=findCovering(weak,k,required,1n<<BigInt(gi),rng);
+      if(m.length){const pick=m[Math.floor(rng()*m.length)];return {gridIdx:gi,solution:[...GRIDS[gi]],clues:pick,k};}
+    }
+  }
+  return null;
+}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+// ===========================================================================
+//  Export to SudokuPad (f-puzzles inline)  +  rules text  +  naming
+// ===========================================================================
+const ref=i=>{const[r,c]=rc(i);return `R${r+1}C${c+1}`;};
+const RULES={
+  _normal:"Normal sudoku rules apply: place the digits 1–4 once each in every row, column, and 2×2 box.",
+  cage:"Killer cage: digits within a cage must sum to the total given in its top-left corner and may not repeat.",
+  thermo:"Thermometer: digits strictly increase along a thermometer, starting from the bulb.",
+  arrow:"Arrow: the digit in a circle equals the sum of the digits along its attached arrow.",
+  kropki_w:"White Kropki dots: cells separated by a white dot contain consecutive digits. Not all dots are necessarily given.",
+  kropki_b:"Black Kropki dots: cells separated by a black dot have digits in a 1:2 ratio. Not all dots are necessarily given.",
+  v:"XV: cells joined by a V sum to 5. Not all are necessarily given.",
+  diag:"Diagonal: digits may not repeat along the marked diagonal.",
+  odd:"Odd: a cell with a grey circle contains an odd digit.",
+  even:"Even: a cell with a grey square contains an even digit.",
+  antiknight:"Anti-knight: cells a chess-knight's move apart must not contain the same digit.",
+  index:"Index (column 1): in each row, the digit in column 1 gives the column in which the 1 appears in that row.",
+};
+const RULE_ORDER=["index","cage","thermo","arrow","kropki_w","kropki_b","v","diag","odd","even","antiknight"];
+function rulesText(kinds){const parts=[RULES._normal];for(const k of RULE_ORDER)if(kinds.has(k)&&RULES[k])parts.push(RULES[k]);return parts.join("\n");}
+const ADJ=["Quiet","Crimson","Hollow","Gilded","Folded","Distant","Amber","Slate","Tangled","Velvet","Brisk","Hidden","Lucid","Wandering"];
+const NOUN=["Lattice","Cascade","Cipher","Meridian","Thicket","Beacon","Spindle","Harbor","Glyph","Cinder","Vertex","Drift","Quartet"];
+const B36="abcdefghijklmnopqrstuvwxyz0123456789";
+function hashStr(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+function identity(clues){
+  const sig=clues.map(c=>c.kind+":"+[...c.cells].sort((a,b)=>a-b).join("-")+":"+c.data.join("-")).sort().join("|");
+  const h=hashStr(sig);
+  const title=ADJ[h%ADJ.length]+" "+NOUN[Math.floor(h/ADJ.length)%NOUN.length];
+  let author="";for(let i=0;i<8;i++)author+=B36[(h>>>(i*3+1))%36];
+  return {title,author};
+}
+function buildFpuzzles(p,title,author){
+  const kinds=new Set(p.clues.map(c=>c.kind));
+  const grid=[];for(let r=0;r<N;r++){grid.push([]);for(let c=0;c<N;c++)grid[r].push({region:boxOf(r,c)});}
+  const fp={size:N,grid,title,author,ruleset:rulesText(kinds),solution:p.solution.slice()};
+  const push=(key,item)=>{(fp[key]=fp[key]||[]).push(item);};
+  for(const cl of p.clues){const refs=cl.cells.map(ref);
+    switch(cl.kind){
+      case "cage":push("killercage",{cells:refs,value:String(cl.data[0])});break;
+      case "thermo":push("thermometer",{lines:[refs]});break;
+      case "arrow":push("arrow",{cells:[refs[0]],lines:[refs]});break;
+      case "kropki_w":push("difference",{cells:refs});break;
+      case "kropki_b":push("ratio",{cells:refs,value:"2"});break;
+      case "v":push("xv",{cells:refs,value:"V"});break;
+      case "diag":{const[r0,c0]=rc(cl.cells[0]);fp[r0===c0?"diagonal-":"diagonal+"]=true;break;}
+      case "odd":push("odd",{cell:refs[0]});break;
+      case "even":push("even",{cell:refs[0]});break;
+      case "antiknight":fp.antiknight=true;break;
+      case "index":break;
+    }
+  }
+  return fp;
+}
+function toUrl(p){const {title,author}=identity(p.clues);const fp=buildFpuzzles(p,title,author);
+  return {url:"https://sudokupad.app/fpuzzles"+LZString.compressToBase64(JSON.stringify(fp)),title,author,rules:fp.ruleset};}
+
+// ===========================================================================
+//  UI
+// ===========================================================================
+const RULE_LIST=[
+  ["cage","Killer cage",1],["thermo","Thermometer",1],["arrow","Arrow",1],
+  ["kropki_w","White dot",0],["kropki_b","Black dot",0],["v","V (sum 5)",0],
+  ["diag","Diagonal",0],["odd","Odd",0],["even","Even",0],
+  ["antiknight","Anti-knight",0],["index","Index (col 1 → 1)",0],
+];
+const rulesEl=document.getElementById("rules");
+for(const [k,label,on] of RULE_LIST){const l=document.createElement("label");l.className="rule";
+  l.innerHTML=`<input type="checkbox" value="${k}" ${on?"checked":""}><span>${label}</span>`;rulesEl.appendChild(l);}
+const boxes=()=>[...document.querySelectorAll("#rules input")];
+const selected=()=>boxes().filter(b=>b.checked).map(b=>b.value);
+document.getElementById("all").onclick=()=>boxes().forEach(b=>b.checked=true);
+document.getElementById("none").onclick=()=>boxes().forEach(b=>b.checked=false);
+
+// SVG preview
+const CS=80,M=24,SIZE=N*CS+2*M,SVGNS="http://www.w3.org/2000/svg";
+const cx=c=>M+(c+0.5)*CS, cy=r=>M+(r+0.5)*CS;
+const board=document.getElementById("board");board.setAttribute("viewBox",`0 0 ${SIZE} ${SIZE}`);
+function el(t,a={},p){const e=document.createElementNS(SVGNS,t);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e;}
+function edgeMid(a,b){const[ra,ca]=rc(a),[rb,cb]=rc(b);return [(cx(ca)+cx(cb))/2,(cy(ra)+cy(rb))/2];}
+function draw(p){
+  board.innerHTML="";const defs=el("defs",{},board);
+  const mk=el("marker",{id:"ah",markerWidth:6,markerHeight:6,refX:3.6,refY:3,orient:"auto"},defs);
+  el("path",{d:"M0,0 L4,3 L0,6",fill:"none",stroke:"var(--thermo)","stroke-width":1.2},mk);
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++)el("rect",{x:M+c*CS,y:M+r*CS,width:CS,height:CS,fill:"var(--cell)"},board);
+  if(p)for(const cl of p.clues)drawClue(cl);
+  for(let i=0;i<=N;i++){const thick=i%2===0,q=M+i*CS;
+    el("line",{x1:M,y1:q,x2:M+N*CS,y2:q,stroke:thick?"var(--gridthick)":"var(--gridthin)","stroke-width":thick?3:1},board);
+    el("line",{x1:q,y1:M,x2:q,y2:M+N*CS,stroke:thick?"var(--gridthick)":"var(--gridthin)","stroke-width":thick?3:1},board);}
+}
+function drawClue(cl){const k=cl.kind,cs=cl.cells;
+  if(k==="cage")return drawCage(cs,cl.data[0]);
+  if(k==="thermo"){const pts=cs.map(i=>{const[r,c]=rc(i);return `${cx(c)},${cy(r)}`;}).join(" ");const[r0,c0]=rc(cs[0]);
+    el("circle",{cx:cx(c0),cy:cy(r0),r:CS*0.34,fill:"var(--thermo)"},board);
+    el("polyline",{points:pts,fill:"none",stroke:"var(--thermo)","stroke-width":CS*0.22,"stroke-linecap":"round","stroke-linejoin":"round"},board);return;}
+  if(k==="arrow"){const[r0,c0]=rc(cs[0]);el("circle",{cx:cx(c0),cy:cy(r0),r:CS*0.34,fill:"none",stroke:"var(--thermo)","stroke-width":3},board);
+    const pts=cs.map(i=>{const[r,c]=rc(i);return `${cx(c)},${cy(r)}`;}).join(" ");
+    el("polyline",{points:pts,fill:"none",stroke:"var(--thermo)","stroke-width":CS*0.05,"stroke-linecap":"round","stroke-linejoin":"round","marker-end":"url(#ah)"},board);return;}
+  if(k==="kropki_w"||k==="kropki_b"){const[x,y]=edgeMid(cs[0],cs[1]);
+    el("circle",{cx:x,cy:y,r:CS*0.12,fill:k==="kropki_w"?"#fff":"#111",stroke:k==="kropki_w"?"#111":"#fff","stroke-width":1.5},board);return;}
+  if(k==="v"){const[x,y]=edgeMid(cs[0],cs[1]);el("circle",{cx:x,cy:y,r:CS*0.16,fill:"var(--cell)"},board);
+    el("text",{x,y:y+1,"text-anchor":"middle","dominant-baseline":"central","font-size":CS*0.28,fill:"var(--fg)","font-weight":700},board).textContent="V";return;}
+  if(k==="diag"){const[r0,c0]=rc(cs[0]),[r1,c1]=rc(cs[cs.length-1]);
+    el("line",{x1:M+(c0+(c1>c0?0:1))*CS,y1:M+(r0+(r1>r0?0:1))*CS,x2:M+(c1+(c1>c0?1:0))*CS,y2:M+(r1+(r1>r0?1:0))*CS,stroke:"var(--diag)","stroke-width":3},board);return;}
+  if(k==="odd"){const[r,c]=rc(cs[0]);el("circle",{cx:cx(c),cy:cy(r),r:CS*0.36,fill:"var(--parity)"},board);return;}
+  if(k==="even"){const[r,c]=rc(cs[0]);el("rect",{x:cx(c)-CS*0.34,y:cy(r)-CS*0.34,width:CS*0.68,height:CS*0.68,rx:6,fill:"var(--parity)"},board);return;}
+}
+function drawCage(cells,sum){const set=new Set(cells),inset=6;
+  const has=(r,c)=>r>=0&&r<N&&c>=0&&c<N&&set.has(idx(r,c));
+  for(const i of cells){const[r,c]=rc(i);const x0=M+c*CS,y0=M+r*CS,x1=x0+CS,y1=y0+CS;
+    const seg=(a,b,d,e)=>el("line",{x1:a,y1:b,x2:d,y2:e,stroke:"var(--cage)","stroke-width":1.4,"stroke-dasharray":"4 3"},board);
+    if(!has(r-1,c))seg(x0+inset,y0+inset,x1-inset,y0+inset);
+    if(!has(r+1,c))seg(x0+inset,y1-inset,x1-inset,y1-inset);
+    if(!has(r,c-1))seg(x0+inset,y0+inset,x0+inset,y1-inset);
+    if(!has(r,c+1))seg(x1-inset,y0+inset,x1-inset,y1-inset);}
+  let tl=cells[0];for(const i of cells){const[r,c]=rc(i),[tr,tc]=rc(tl);if(r<tr||(r===tr&&c<tc))tl=i;}
+  const[r,c]=rc(tl);
+  el("text",{x:M+c*CS+inset+3,y:M+r*CS+inset+16,"font-size":CS*0.2,fill:"var(--fg)","font-weight":700,"paint-order":"stroke",stroke:"var(--cell)","stroke-width":3},board).textContent=sum;
+}
+function setStatus(msg,cls=""){const s=document.getElementById("status");s.textContent=msg;s.className=cls;}
+
+let seedCounter=1;
+function generate(){
+  const sel=selected();
+  if(!sel.length){setStatus("select at least one rule set","bad");return;}
+  setStatus("generating…");
+  setTimeout(()=>{
+    const t=performance.now();
+    const p=generateOne(sel, 4, 30, (Date.now()+seedCounter++)>>>0);
+    if(!p){setStatus("no puzzle uses all those rules — change the selection","bad");draw(null);document.getElementById("open").classList.add("disabled");return;}
+    const {url,title,rules}=toUrl(p);
+    draw(p);
+    const kinds=p.clues.map(c=>c.kind).join(", ");
+    document.getElementById("title").textContent=`${title} — ${p.clues.length} clues: ${kinds}`;
+    const a=document.getElementById("open");a.href=url;a.classList.remove("disabled");
+    const rt=document.getElementById("rulestext");rt.style.display="block";rt.textContent=rules;
+    setStatus(`generated ✓ (${(performance.now()-t).toFixed(0)} ms)`,"good");
+  },10);
+}
+document.getElementById("gen").onclick=generate;
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
+  if(e.key==="Enter")generate(); if(e.key==="t")document.getElementById("theme").click();});
+document.getElementById("theme").onclick=()=>{document.body.classList.toggle("light");localStorage.setItem("genjs:theme",document.body.classList.contains("light")?"light":"dark");};
+if(localStorage.getItem("genjs:theme")==="light")document.body.classList.add("light");
+draw(null);
+setStatus(`ready · ${NG} grids enumerated`);
+</script>
+</body>
+</html>
