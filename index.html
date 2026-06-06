@@ -40,26 +40,44 @@
   #status { color:var(--muted); min-height:20px; }
   #status.bad { color:var(--bad); } #status.good { color:var(--good); }
   .title { font-weight:700; }
+  /* --- mobile: compact, fits without scrolling --- */
+  @media (max-width:700px) {
+    body { height:auto; min-height:100vh; overflow:auto; }
+    header { padding:8px 12px; gap:8px; }
+    h1 { font-size:14px; }
+    #status { font-size:11px; min-height:0; }
+    main { flex-direction:column; padding:8px; gap:8px; overflow:visible; }
+    .side { width:100%; overflow:visible; padding:8px 10px; }
+    .side h2 { margin:0 0 4px; }
+    /* rule sets as compact toggle chips that wrap */
+    .rules { display:flex; flex-direction:row; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+    label.rule { padding:6px 10px; min-height:32px; border:1px solid var(--border); border-radius:15px; gap:0; }
+    label.rule:hover { background:var(--bg); }
+    label.rule input { position:absolute; width:1px; height:1px; opacity:0; }
+    label.rule:has(input:checked) { background:var(--accent); color:#06121f; border-color:var(--accent); font-weight:600; }
+    #gen { min-height:40px; padding:8px; }
+    .content { overflow:visible; gap:5px; }
+    svg.board { width:min(100%, 300px); }
+    .rulestext { font-size:11px; padding:6px 9px; line-height:1.4; }
+    .meta .title { font-size:13px; }
+  }
 </style>
 </head>
 <body>
   <header>
-    <h1>2×2 Variant Generator</h1>
-    <span id="status"></span>
     <span class="spacer"></span>
     <button id="theme" title="toggle theme">◐</button>
   </header>
   <main>
     <div class="side">
       <h2>Rule sets</h2>
-      <div style="font-size:12px;color:var(--muted);margin:-4px 0 8px">every selected rule is used</div>
-      <div class="toolrow"><button id="all">all</button><button id="none">none</button></div>
       <div class="rules" id="rules"></div>
       <button class="primary" id="gen" style="width:100%">Generate ⏎</button>
     </div>
     <div class="content">
       <svg class="board" id="board" viewBox="0 0 368 368"></svg>
       <div class="meta">
+        <div id="status"></div>
         <div class="openrow">
           <span class="title" id="title">—</span>
           <span class="spacer"></span>
@@ -292,8 +310,6 @@ for(const [k,label,on] of RULE_LIST){const l=document.createElement("label");l.c
   l.innerHTML=`<input type="checkbox" value="${k}" ${on?"checked":""}><span>${label}</span>`;rulesEl.appendChild(l);}
 const boxes=()=>[...document.querySelectorAll("#rules input")];
 const selected=()=>boxes().filter(b=>b.checked).map(b=>b.value);
-document.getElementById("all").onclick=()=>boxes().forEach(b=>b.checked=true);
-document.getElementById("none").onclick=()=>boxes().forEach(b=>b.checked=false);
 
 // SVG preview
 const CS=80,M=24,SIZE=N*CS+2*M,SVGNS="http://www.w3.org/2000/svg";
