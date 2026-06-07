@@ -72,7 +72,10 @@
     <div class="side">
       <h2>Rule sets</h2>
       <div class="rules" id="rules"></div>
-      <button class="primary" id="gen" style="width:100%">Generate ⏎</button>
+      <div style="display:flex;gap:8px">
+        <button class="primary" id="gen" style="flex:1">Generate ⏎</button>
+        <button class="primary" id="rand" style="flex:1">Randomize ruleset</button>
+      </div>
     </div>
     <div class="content">
       <svg class="board" id="board" viewBox="0 0 368 368"></svg>
@@ -89,6 +92,7 @@
   </main>
 
 <script src="lz-string.min.js"></script>
+<script src="rule_dist.js"></script>
 <script>
 "use strict";
 // ===========================================================================
@@ -139,6 +143,7 @@ const MAIN=[0,5,10,15], ANTI=[3,6,9,12];
 
 // ---- holds(clue, grid) ----
 function noOffsetRepeat(g,offs){for(let r=0;r<N;r++)for(let c=0;c<N;c++)for(const[dr,dc] of offs){const nr=r+dr,nc=c+dc;if(nr>=0&&nr<N&&nc>=0&&nc<N&&g[idx(r,c)]===g[idx(nr,nc)])return false;}return true;}
+function boxSegments(cells){const segs=[];let cur=[cells[0]];for(let k=1;k<cells.length;k++){const i=cells[k],[r,c]=rc(i),[pr,pc]=rc(cur[cur.length-1]);if(boxOf(r,c)===boxOf(pr,pc))cur.push(i);else{segs.push(cur);cur=[i];}}segs.push(cur);return segs;}
 function holds(cl,g){
   const k=cl.kind,cs=cl.cells,d=cl.data;
   switch(k){
@@ -148,6 +153,10 @@ function holds(cl,g){
     case "kropki_w":return Math.abs(g[cs[0]]-g[cs[1]])===1;
     case "kropki_b":return g[cs[0]]===2*g[cs[1]]||g[cs[1]]===2*g[cs[0]];
     case "v":return g[cs[0]]+g[cs[1]]===5;
+    case "renban":{const vals=cs.map(i=>g[i]);return new Set(vals).size===vals.length&&Math.max(...vals)-Math.min(...vals)===vals.length-1;}
+    case "whisper":for(let i=0;i<cs.length-1;i++)if(Math.abs(g[cs[i]]-g[cs[i+1]])<2)return false;return true;
+    case "region_sum":{const sums=boxSegments(cs).map(s=>s.reduce((a,i)=>a+g[i],0));return new Set(sums).size===1;}
+    case "palindrome":for(let i=0;i<cs.length>>1;i++)if(g[cs[i]]!==g[cs[cs.length-1-i]])return false;return true;
     case "diag":{const s=new Set(cs.map(i=>g[i]));return s.size===cs.length;}
     case "odd":return g[cs[0]]%2===1;
     case "even":return g[cs[0]]%2===0;
@@ -164,6 +173,15 @@ function candidates(g,kinds){
   if(kinds.has("cage")) for(const cells of CONNECTED){ if(cells.length<2)continue; const vals=cells.map(i=>g[i]); if(new Set(vals).size===vals.length) add("cage",cells,[vals.reduce((a,b)=>a+b,0)]); }
   if(kinds.has("thermo")) for(const p of KPATHS){ let ok=true; for(let i=0;i<p.length-1;i++)if(!(g[p[i]]<g[p[i+1]])){ok=false;break;} if(ok)add("thermo",p); }
   if(kinds.has("arrow")) for(const p of KPATHS){ let s=0;for(let i=1;i<p.length;i++)s+=g[p[i]]; if(g[p[0]]===s)add("arrow",p); }
+  // line constraints (length>=3, one orientation per path)
+  const wantLine=kinds.has("renban")||kinds.has("whisper")||kinds.has("region_sum")||kinds.has("palindrome");
+  if(wantLine) for(const p of KPATHS){ if(p.length<3)continue; const rev=p.slice().reverse(); if(p.join()>rev.join())continue;
+    const vals=p.map(i=>g[i]);
+    if(kinds.has("renban")&&new Set(vals).size===vals.length&&Math.max(...vals)-Math.min(...vals)===vals.length-1)add("renban",p);
+    if(kinds.has("whisper")){let ok=true;for(let i=0;i<vals.length-1;i++)if(Math.abs(vals[i]-vals[i+1])<2){ok=false;break;}if(ok)add("whisper",p);}
+    if(kinds.has("region_sum")){const segs=boxSegments(p);if(segs.length>=2&&new Set(segs.map(s=>s.reduce((a,i)=>a+g[i],0))).size===1)add("region_sum",p);}
+    if(kinds.has("palindrome")){let ok=true;for(let i=0;i<p.length>>1;i++)if(vals[i]!==vals[p.length-1-i]){ok=false;break;}if(ok)add("palindrome",p);}
+  }
   // orthogonal pairs
   for(let r=0;r<N;r++)for(let c=0;c<N;c++){const i=idx(r,c);
     if(c+1<N){const j=idx(r,c+1);pairClues(g,i,j,kinds,add);}
@@ -189,7 +207,13 @@ function anyFixed(S){ if(S===0n)return true; const g0=GRIDS[lowestIndex(S)];
 function weakClues(gi,kinds){
   return candidates(GRIDS[gi],kinds).map(cl=>({cl,m:holdMask(cl)})).filter(x=>!anyFixed(x.m));
 }
-function cagesDisjoint(clues){const seen=new Set();for(const c of clues)if(c.kind==="cage"){for(const i of c.cells){if(seen.has(i))return false;seen.add(i);}}return true;}
+const DISJOINT_KINDS=new Set(["cage","renban","whisper","region_sum","palindrome"]);
+const LINE_KINDS=new Set(["thermo","arrow","renban","whisper","region_sum","palindrome"]);
+function comboDisjoint(clues){
+  const seen={};for(const c of clues)if(DISJOINT_KINDS.has(c.kind)){const s=seen[c.kind]||(seen[c.kind]=new Set());for(const i of c.cells){if(s.has(i))return false;s.add(i);}}
+  // no two lines coincide over a segment (sharing a single cell / crossing is fine)
+  const edges=new Set();for(const c of clues)if(LINE_KINDS.has(c.kind))for(let i=0;i<c.cells.length-1;i++){const a=c.cells[i],b=c.cells[i+1],k=a<b?a+","+b:b+","+a;if(edges.has(k))return false;edges.add(k);}
+  return true;}
 function isInteresting(masks,targetBit){
   let sat=ALL; for(const m of masks)sat&=m; if(sat!==targetBit)return false;
   for(let drop=0;drop<masks.length;drop++){let s=ALL;for(let j=0;j<masks.length;j++)if(j!==drop)s&=masks[j];if(anyFixed(s))return false;}
@@ -212,7 +236,7 @@ function findCovering(weak,k,required,targetBit,rng,limit=12,budget=80000){
     for(const ex of exIter){
       if(--budget<0)return matches;
       const sel=base.concat(ex);
-      if(!cagesDisjoint(sel.map(x=>x.cl)))continue;
+      if(!comboDisjoint(sel.map(x=>x.cl)))continue;
       if(isInteresting(sel.map(x=>x.m),targetBit)){ matches.push(sel.map(x=>x.cl)); if(matches.length>=limit)return matches; }
     }
   }
@@ -255,10 +279,15 @@ const RULES={
   diag:"Diagonal: digits may not repeat along the marked diagonal.",
   odd:"Odd: a cell with a grey circle contains an odd digit.",
   even:"Even: a cell with a grey square contains an even digit.",
+  renban:"Renban: digits along a purple line are consecutive and non-repeating, in any order.",
+  whisper:"Whisper: adjacent digits along a green line differ by at least 2.",
+  region_sum:"Region-sum line: along a blue line, the digits within each 2×2 box have the same sum.",
+  palindrome:"Palindrome: a grey line reads the same forwards and backwards.",
   antiknight:"Anti-knight: cells a chess-knight's move apart must not contain the same digit.",
   index:"Index (column 1): in each row, the digit in column 1 gives the column in which the 1 appears in that row.",
 };
-const RULE_ORDER=["index","cage","thermo","arrow","kropki_w","kropki_b","v","diag","odd","even","antiknight"];
+const RULE_ORDER=["index","cage","thermo","arrow","kropki_w","kropki_b","v","diag","odd","even","renban","whisper","region_sum","palindrome","antiknight"];
+const LINE_COLOR={renban:"#C66DE7",whisper:"#67E067",region_sum:"#2EB8FF"};
 function rulesText(kinds){const parts=[RULES._normal];for(const k of RULE_ORDER)if(kinds.has(k)&&RULES[k])parts.push(RULES[k]);return parts.join("\n");}
 const ADJ=["Quiet","Crimson","Hollow","Gilded","Folded","Distant","Amber","Slate","Tangled","Velvet","Brisk","Hidden","Lucid","Wandering"];
 const NOUN=["Lattice","Cascade","Cipher","Meridian","Thicket","Beacon","Spindle","Harbor","Glyph","Cinder","Vertex","Drift","Quartet"];
@@ -285,6 +314,8 @@ function buildFpuzzles(p,title,author){
       case "kropki_b":push("ratio",{cells:refs,value:"2"});break;
       case "v":push("xv",{cells:refs,value:"V"});break;
       case "diag":{const[r0,c0]=rc(cl.cells[0]);fp[r0===c0?"diagonal-":"diagonal+"]=true;break;}
+      case "palindrome":push("palindrome",{lines:[refs]});break;
+      case "renban":case "whisper":case "region_sum":push("line",{lines:[refs],outlineC:LINE_COLOR[cl.kind],width:0.25});break;
       case "odd":push("odd",{cell:refs[0]});break;
       case "even":push("even",{cell:refs[0]});break;
       case "antiknight":fp.antiknight=true;break;
@@ -303,6 +334,7 @@ const RULE_LIST=[
   ["cage","Killer cage",1],["thermo","Thermometer",1],["arrow","Arrow",1],
   ["kropki_w","White dot",0],["kropki_b","Black dot",0],["v","V (sum 5)",0],
   ["diag","Diagonal",0],["odd","Odd",0],["even","Even",0],
+  ["renban","Renban",0],["whisper","Whisper",0],["region_sum","Region-sum",0],["palindrome","Palindrome",0],
   ["antiknight","Anti-knight",0],["index","Index (col 1 → 1)",0],
 ];
 const rulesEl=document.getElementById("rules");
@@ -341,6 +373,10 @@ function drawClue(cl){const k=cl.kind,cs=cl.cells;
     el("text",{x,y:y+1,"text-anchor":"middle","dominant-baseline":"central","font-size":CS*0.28,fill:"var(--fg)","font-weight":700},board).textContent="V";return;}
   if(k==="diag"){const[r0,c0]=rc(cs[0]),[r1,c1]=rc(cs[cs.length-1]);
     el("line",{x1:M+(c0+(c1>c0?0:1))*CS,y1:M+(r0+(r1>r0?0:1))*CS,x2:M+(c1+(c1>c0?1:0))*CS,y2:M+(r1+(r1>r0?1:0))*CS,stroke:"var(--diag)","stroke-width":3},board);return;}
+  if(k==="palindrome"||k==="renban"||k==="whisper"||k==="region_sum"){
+    const pts=cs.map(i=>{const[r,c]=rc(i);return `${cx(c)},${cy(r)}`;}).join(" ");
+    const col=k==="palindrome"?"#8a93a3":LINE_COLOR[k];
+    el("polyline",{points:pts,fill:"none",stroke:col,"stroke-width":CS*0.18,"stroke-linecap":"round","stroke-linejoin":"round",opacity:0.85},board);return;}
   if(k==="odd"){const[r,c]=rc(cs[0]);el("circle",{cx:cx(c),cy:cy(r),r:CS*0.36,fill:"var(--parity)"},board);return;}
   if(k==="even"){const[r,c]=rc(cs[0]);el("rect",{x:cx(c)-CS*0.34,y:cy(r)-CS*0.34,width:CS*0.68,height:CS*0.68,rx:6,fill:"var(--parity)"},board);return;}
 }
@@ -366,7 +402,7 @@ function generate(){
   setTimeout(()=>{
     const t=performance.now();
     const p=generateOne(sel, 4, 30, (Date.now()+seedCounter++)>>>0);
-    if(!p){setStatus("no puzzle uses all those rules — change the selection","bad");draw(null);document.getElementById("open").classList.add("disabled");return;}
+    if(!p){setStatus("search returned no interesting puzzles with this rule set, consider changing the rules","bad");draw(null);document.getElementById("open").classList.add("disabled");return;}
     const {url,title,rules}=toUrl(p);
     draw(p);
     const kinds=p.clues.map(c=>c.kind).join(", ");
@@ -376,13 +412,17 @@ function generate(){
     setStatus(`generated ✓ (${(performance.now()-t).toFixed(0)} ms)`,"good");
   },10);
 }
+// stateless sampler over the hardcoded viable-ruleset distribution (rule_dist.js)
+function pickRuleset(){const r=Math.random();let acc=0;for(const [ks,w] of RULE_DIST){acc+=w;if(r<=acc)return ks;}return RULE_DIST[RULE_DIST.length-1][0];}
+function setSelected(ks){const set=new Set(ks);for(const b of boxes())b.checked=set.has(b.value);}
+function randomize(){setSelected(pickRuleset());generate();}
 document.getElementById("gen").onclick=generate;
+document.getElementById("rand").onclick=randomize;
 addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
-  if(e.key==="Enter")generate(); if(e.key==="t")document.getElementById("theme").click();});
+  if(e.key==="Enter")generate(); if(e.key==="r")randomize(); if(e.key==="t")document.getElementById("theme").click();});
 document.getElementById("theme").onclick=()=>{document.body.classList.toggle("light");localStorage.setItem("genjs:theme",document.body.classList.contains("light")?"light":"dark");};
 if(localStorage.getItem("genjs:theme")==="light")document.body.classList.add("light");
-draw(null);
-setStatus(`ready · ${NG} grids enumerated`);
+randomize();   // on load: pick a random viable ruleset and generate
 </script>
 </body>
 </html>
