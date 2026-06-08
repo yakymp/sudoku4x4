@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>2×2 Variant Sudoku — Generator (JS-only)</title>
+<title>4×4 Variant Sudoku Generator</title>
 <style>
   :root { --bg:#1a1a1a; --fg:#ddd; --panel:#242424; --border:#3a3a3a; --cell:#202020;
           --gridthin:#555; --gridthick:#aaa; --thermo:#6b6b6b; --cage:#9a9a9a; --diag:#34BBE6;
@@ -224,23 +224,31 @@ function isInteresting(masks,targetBit){
 function shuffle(a,rng){for(let i=a.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
 function* combinations(arr,k){const n=arr.length;if(k>n)return;const idxs=Array.from({length:k},(_,i)=>i);
   while(true){yield idxs.map(i=>arr[i]);let i=k-1;while(i>=0&&idxs[i]===i+n-k)i--;if(i<0)return;idxs[i]++;for(let j=i+1;j<k;j++)idxs[j]=idxs[j-1]+1;}}
-function findCovering(weak,k,required,targetBit,rng,limit=12,budget=80000){
-  const byKind={}; for(const rk of required)byKind[rk]=weak.filter(x=>x.cl.kind===rk);
-  for(const rk of required){if(!byKind[rk].length)return [];shuffle(byKind[rk],rng);}
-  const extra=k-required.length, matches=[];
-  function* product(lists){ if(!lists.length){yield [];return;} const [first,...rest]=lists; for(const x of first)for(const r of product(rest))yield [x,...r]; }
-  for(const base of product(required.map(rk=>byKind[rk]))){
-    const baseSet=new Set(base);
-    const pool=weak.filter(x=>!baseSet.has(x));
-    const exIter = extra===0 ? [[]] : combinations(pool,extra);
-    for(const ex of exIter){
-      if(--budget<0)return matches;
-      const sel=base.concat(ex);
-      if(!comboDisjoint(sel.map(x=>x.cl)))continue;
-      if(isInteresting(sel.map(x=>x.m),targetBit)){ matches.push(sel.map(x=>x.cl)); if(matches.length>=limit)return matches; }
-    }
+// branch-and-bound set-cover: enumerate uniqueness covers (most-constrained grid
+// first), unchanged isInteresting leaf test; complete (no budget cap), randomized
+// for variety, with an optional wall-clock deadline.
+function findInterestingBB(weak,required,targetBit,kmin,maxK,limit,rng,deadline){
+  const n=weak.length, kill=weak.map(x=>ALL^x.m);
+  const coverBy=Array.from({length:NG},()=>[]);
+  for(let i=0;i<n;i++){let b=kill[i];while(b){const lb=b&-b;coverBy[lb.toString(2).length-1].push(i);b^=lb;}}
+  const results=[],chosen=[],masks=[],used={},usedE=new Set();
+  const edgesOf=c=>{const e=[];if(LINE_KINDS.has(c.kind))for(let i=0;i<c.cells.length-1;i++){const a=c.cells[i],b=c.cells[i+1];e.push(a<b?a+","+b:b+","+a);}return e;};
+  const ok=i=>{const c=weak[i].cl;if(DISJOINT_KINDS.has(c.kind)){const s=used[c.kind];if(s)for(const x of c.cells)if(s.has(x))return false;}for(const e of edgesOf(c))if(usedE.has(e))return false;return true;};
+  const commit=i=>{const c=weak[i].cl;if(DISJOINT_KINDS.has(c.kind)){const s=used[c.kind]||(used[c.kind]=new Set());for(const x of c.cells)s.add(x);}for(const e of edgesOf(c))usedE.add(e);};
+  const uncommit=i=>{const c=weak[i].cl;if(DISJOINT_KINDS.has(c.kind)){const s=used[c.kind];for(const x of c.cells)s.delete(x);}for(const e of edgesOf(c))usedE.delete(e);};
+  let nodes=0;
+  function rec(uncovered,depth){
+    if(deadline&&((++nodes&1023)===0)&&Date.now()>deadline)return;
+    if(uncovered===0n){if(depth>=kmin){const ks=new Set(chosen.map(i=>weak[i].cl.kind));if(required.every(k=>ks.has(k))&&isInteresting(masks,targetBit))results.push(chosen.map(i=>weak[i].cl));}return;}
+    if(depth>=maxK)return;
+    const ks=new Set(chosen.map(i=>weak[i].cl.kind));let unmet=0;for(const k of required)if(!ks.has(k))unmet++;if(unmet>maxK-depth)return;
+    const h=lowestIndex(uncovered), cands=shuffle(coverBy[h].slice(),rng);
+    for(const i of cands){if(results.length>=limit||(deadline&&Date.now()>deadline))return;
+      if(chosen.includes(i)||!ok(i))continue;
+      chosen.push(i);masks.push(weak[i].m);commit(i);rec(uncovered&~kill[i],depth+1);uncommit(i);masks.pop();chosen.pop();}
   }
-  return matches;
+  rec(ALL^targetBit,0);
+  return results;
 }
 function generateOne(selected,maxK=4,gridCap=30,seed){
   const rng=mulberry32(seed>>>0);
@@ -250,15 +258,14 @@ function generateOne(selected,maxK=4,gridCap=30,seed){
   const glob=required.filter(k=>["index","antiknight"].includes(k));
   if(glob.length){const supports=gi=>glob.every(k=>holds({kind:k,cells:[],data:k==="index"?[1,1]:[]},GRIDS[gi]));
     order=order.filter(supports).concat(order.filter(gi=>!supports(gi)));}
-  const kmin=Math.max(2,required.length);
+  const kmin=Math.max(2,required.length), deadline=Date.now()+2000;
   for(const gi of order.slice(0,gridCap)){
+    if(Date.now()>deadline)break;
     const weak=weakClues(gi,new Set(required));
     const avail=new Set(weak.map(x=>x.cl.kind));
     if(!required.every(k=>avail.has(k)))continue;
-    for(let k=kmin;k<=maxK;k++){ if(weak.length<k)break;
-      const m=findCovering(weak,k,required,1n<<BigInt(gi),rng);
-      if(m.length){const pick=m[Math.floor(rng()*m.length)];return {gridIdx:gi,solution:[...GRIDS[gi]],clues:pick,k};}
-    }
+    const m=findInterestingBB(weak,required,1n<<BigInt(gi),kmin,maxK,12,rng,deadline);
+    if(m.length){const pick=m[Math.floor(rng()*m.length)];return {gridIdx:gi,solution:[...GRIDS[gi]],clues:pick,k:pick.length};}
   }
   return null;
 }
@@ -279,9 +286,9 @@ const RULES={
   diag:"Diagonal: digits may not repeat along the marked diagonal.",
   odd:"Odd: a cell with a grey circle contains an odd digit.",
   even:"Even: a cell with a grey square contains an even digit.",
-  renban:"Renban: digits along a purple line are consecutive and non-repeating, in any order.",
+  renban:"Renban (purple line): a set of consecutive digits in any order (no repeats).",
   whisper:"Whisper: adjacent digits along a green line differ by at least 2.",
-  region_sum:"Region-sum line: along a blue line, the digits within each 2×2 box have the same sum.",
+  region_sum:"Region-sum line: the 2×2 box borders split a blue line into segments, and every segment has the same digit sum.",
   palindrome:"Palindrome: a grey line reads the same forwards and backwards.",
   antiknight:"Anti-knight: cells a chess-knight's move apart must not contain the same digit.",
   index:"Index (column 1): in each row, the digit in column 1 gives the column in which the 1 appears in that row.",
