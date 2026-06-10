@@ -214,8 +214,25 @@ function comboDisjoint(clues){
   // no two lines coincide over a segment (sharing a single cell / crossing is fine)
   const edges=new Set();for(const c of clues)if(LINE_KINDS.has(c.kind))for(let i=0;i<c.cells.length-1;i++){const a=c.cells[i],b=c.cells[i+1],k=a<b?a+","+b:b+","+a;if(edges.has(k))return false;edges.add(k);}
   return true;}
+// candidate-hull: fill candidates from each clue SEPARATELY, then drop clue rules and
+// reason with sudoku alone (= restrict to valid grids consistent with the candidates).
+// hullFixed = that reasoning already pins some cell -> puzzle too easy.
+function hullFixed(masks){
+  let S=ALL;
+  for(let c=0;c<N*N;c++){
+    let u=0n;
+    for(let v=1;v<=N;v++){
+      const bit=VAL[c][v]; let ok=true;
+      for(const m of masks){ if((m&bit)===0n){ok=false;break;} }
+      if(ok) u|=bit;
+    }
+    S&=u;
+  }
+  return anyFixed(S);
+}
 function isInteresting(masks,targetBit){
   let sat=ALL; for(const m of masks)sat&=m; if(sat!==targetBit)return false;
+  if(hullFixed(masks))return false;   // sudoku-only reasoning on per-clue candidates must pin nothing
   for(let drop=0;drop<masks.length;drop++){let s=ALL;for(let j=0;j<masks.length;j++)if(j!==drop)s&=masks[j];if(anyFixed(s))return false;}
   return true;
 }
@@ -239,6 +256,7 @@ function findInterestingBB(weak,required,targetBit,kmin,maxK,limit,rng,deadline)
   let nodes=0;
   function rec(uncovered,depth){
     if(deadline&&((++nodes&1023)===0)&&Date.now()>deadline)return;
+    if(depth>=2&&hullFixed(masks))return;   // monotone: hull only shrinks as clues are added
     if(uncovered===0n){if(depth>=kmin){const ks=new Set(chosen.map(i=>weak[i].cl.kind));if(required.every(k=>ks.has(k))&&isInteresting(masks,targetBit))results.push(chosen.map(i=>weak[i].cl));}return;}
     if(depth>=maxK)return;
     const ks=new Set(chosen.map(i=>weak[i].cl.kind));let unmet=0;for(const k of required)if(!ks.has(k))unmet++;if(unmet>maxK-depth)return;
